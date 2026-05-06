@@ -1,42 +1,53 @@
-# DLR-BackLoss: Dynamic Linear Recurrent BackLoss
+# DLR-Backloss — Turkish LM (1 hour from scratch)
 
-**DLR-BackLoss** is a novel deep learning architecture designed as an efficient $O(n)$ alternative to the standard Transformer's $O(n^2)$ complexity. It combines the speed of linear recurrence with a unique statistical selectivity mechanism inspired by 'BackLoss' principles.
+29M parameter Türkçe dil modeli, 2x T4 GPU üzerinde 1 saatte sıfırdan eğitilir.
+Diagonal Linear Recurrent (DLR) blokları + Heinsen-style chunked parallel scan
++ u-normalize stabilitesi.
 
-## 🚀 Technical Innovation: The BackLoss Signal
+## Sonuçlar (1 saat, 2x T4)
 
-Unlike standard attention or gated RNNs, DLR-BackLoss utilizes cumulative statistics of the input sequence to determine dynamic gating. The core selectivity k-factor is calculated as:
+| Metric | Değer |
+|--------|-------|
+| Params | 29.27M |
+| Tokens seen | 203.5M (1 epoch) |
+| Throughput | 56,500 tok/s (DDPx2) |
+| Final loss | 4.12 |
+| Final ppl | 61.6 |
+| Steps | 6,211 |
 
-$$\alpha_t = \sigma(Q_t - \mu_{k, 1:t})$$
+## Mimari
 
-Where:
-*   **$\mu_{k, 1:t}$**: Cumulative mean of keys ($K$) up to time $t$.
-*   **$Q_t - \mu$**: Measures the 'surprise' or deviation of the current query from the historical average.
-*   **Parallelization**: The recurrence is solved using a vectorized prefix-sum approach (`torch.cumsum`), enabling full GPU utilization without sequential bottlenecks.
+- **DLRBlock**: `h_t = sigmoid(log_a) * h_{t-1} + u_t` (diagonal SSM)
+- **scan_fp16**: Heinsen log-space chunked parallel scan (chunk=128)
+  - Tek GPU sıralı scan: 5,843 tok/s
+  - DDPx2 + chunked parallel: 56,500 tok/s (9.7x speedup)
+- **u-normalize**: her chunk başında `s = max(|u|, 1)`, sonra `out *= s`.
+  `exp(-log_p) * u` çarpımındaki fp32 overflow'u (t=128 için exp(87)≈1.6e37) önler.
+- **Stability**: GRAD_CLIP=0.3, GradScaler init=2^10, growth=200, a clamp [0.5, 0.95]
 
-## 📊 Performance Benchmarks (Intelligence Efficiency)
+## Kullanım
 
-We define **Intelligence per Second** as the accuracy gained per unit of training time. Our benchmarks across different hardware show that DLR-BackLoss consistently provides higher throughput and faster convergence compared to both Transformers and modern SOTA linear models like Mamba (Simplified).
+```bash
+# 1) Veri hazırla (Türkçe corpus, 200M+ token önerilir)
+python prepare_data.py
 
-| Device | Model | Iterations (60s) | Accuracy (Acc) | Efficiency Coeff |
-| :--- | :--- | :--- | :--- | :--- |
-| **CPU** | Standard Transformer | 138 | 10.89% | 0.181 |
-| **CPU** | **DLR-BackLoss** | **2200** | **13.58%** | **0.226** |
-| **GPU (T4)** | Standard Transformer | 1851 | 7.33% | 0.122 |
-| **GPU (T4)** | **DLR-BackLoss** | **9703** | **12.10%** | **0.201** |
-| **GPU (P100)** | Mamba (Parallel) | 2092 | 7.93% | 0.132 |
-| **GPU (P100)** | **DLR-BackLoss** | **2096** | **10.34%** | **0.172** |
+# 2) Eğit (Kaggle 2x T4)
+torchrun --nproc_per_node=2 --master_port=29500 train_ddp.py
 
-## ✨ Key Features
-
-*   **Linear Scaling $O(n)$**: Processing time grows linearly with sequence length, making it ideal for long-context windows.
-*   **Statistical Selectivity**: Instead of fixed weights, the model focuses on data points that deviate significantly from the 'global character' of the sequence.
-*   **Hardware Agnostic**: Vectorized implementation ensures massive performance gains on both high-end GPUs and restricted CPU environments.
-
-## 🛠️ Usage
-
-```python
-# Example Initialization
-model = DLRBackLossModel(vocab_size=20, d_model=256, n_layers=4)
-# Forward pass
-logits, loss = model(input_tensor, targets)
+# 3) Generation
+python generate.py "Türkiye'nin başkenti"
 ```
+
+## Environment variables
+
+- `TIME_LIMIT`: saniye, default 3600
+- `LOG_EVERY`: step, default 100
+- `DATA_PATH`: tokenized .npy
+- `CKPT_PATH`: checkpoint kayıt yolu
+
+## Kaggle ipucu
+
+Uzun eğitimde Kaggle session restart riskine karşı:
+- Her 1000 step'te checkpoint kaydet (kodu uyarla)
+- `Save Version` ile output dahil kaydet
+- Kernel'i idle bırakma, browser sekmesini kapat ama Save & Run All ile çalıştır
