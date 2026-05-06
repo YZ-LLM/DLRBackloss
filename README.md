@@ -1,40 +1,90 @@
-FORMÜL — Türkçe AçıklamaTemel mantıkLLM bir token tahmin ederken iki adımlı çalışıyor:
-Hidden state (h) üretir: girdi cümlesini d=192 boyutunda bir vektöre sıkıştırır. Bu vektör "şu an ne hakkında konuşuluyor"u temsil eder.
-lm_head linear katmanı: bu hidden state'i alır, vocab boyutunda (16000) skor üretir. Hangi token gelecek?
-logit[v] = h · W_lm[v] (iç çarpım). En yüksek logit'li token kazanır.Eğitim sırasında: Model her token v için W_lm[v] satırını gradient descent ile yavaş yavaş öğrenir. Nadir token'lar az gradient aldığı için kötü öğrenilir.Formül ne yapıyor?Eğitim yerine, W_lm[v] satırını kapalı formla doğrudan hesaplıyoruz:W_lm[v] = (μ_v − μ_global) / σ_globalBurada:
+Önce sana formülü açıklıyorum, sonra subagent'larla planı kuracağım.
 
-μ_v = "Token v'nin geldiği pozisyonlardaki hidden state'lerin ortalaması"
+---
 
-Yani train corpus'unu tarıyoruz, next_token = v olan her pozisyonda hidden state'i topluyoruz, ortalama alıyoruz
-Bu vektör "v gelmek üzereyken hidden state nasıl görünür"ün portresi
+# FORMÜL — Türkçe Açıklama
 
+## Temel mantık
 
-μ_global = Tüm pozisyonlarda hidden state ortalaması (genel arka plan)
-σ_global = Tüm pozisyonlarda hidden state standart sapması (boyut başı)
-(μ_v - μ_global) / σ_global bize **"v token'ı genel ortalamadan hangi yönde sapıyor?"**ü veriyor — z-score gibi.Recency-weighted detayHidden state'leri toplarken son pozisyonu kullanmak yerine, EMA (exponential moving average) uyguluyoruz:h_eff(t) = α · h_eff(t-1) + (1-α) · h(t)    α=0.85Sebep: bir token'ın "mood"u birden fazla pozisyonun karışımıdır, sadece anlık değil. Bu small detail formülü daha sağlam yapıyor.Embedding tarafıAynı formül tok_emb[v] (giriş embedding) için de kullanılıyor:tok_emb[v] = μ_v   (z-score normalize değil, ham mean)Yani v token'ı görüldüğünde, modele "bu hidden state-ish bir şey gör" diyen embedding olarak μ_v'yi atıyoruz.Kullanım — 3 senaryoSenaryo 1: Yeni token eklemek (vocab+1)
+LLM bir token tahmin ederken iki adımlı çalışıyor:
+
+1. **Hidden state (h)** üretir: girdi cümlesini d=192 boyutunda bir vektöre sıkıştırır. Bu vektör "şu an ne hakkında konuşuluyor"u temsil eder.
+2. **lm_head** linear katmanı: bu hidden state'i alır, vocab boyutunda (16000) skor üretir. Hangi token gelecek?
+
+`logit[v] = h · W_lm[v]` (iç çarpım). En yüksek logit'li token kazanır.
+
+**Eğitim sırasında:** Model her token v için W_lm[v] satırını gradient descent ile yavaş yavaş öğrenir. Nadir token'lar az gradient aldığı için kötü öğrenilir.
+
+## Formül ne yapıyor?
+
+Eğitim yerine, W_lm[v] satırını **kapalı formla** doğrudan hesaplıyoruz:
+
+```
+W_lm[v] = (μ_v − μ_global) / σ_global
+```
+
+Burada:
+- **μ_v** = "Token v'nin geldiği pozisyonlardaki hidden state'lerin ortalaması"
+  - Yani train corpus'unu tarıyoruz, `next_token = v` olan her pozisyonda hidden state'i topluyoruz, ortalama alıyoruz
+  - Bu vektör "v gelmek üzereyken hidden state nasıl görünür"ün portresi
+- **μ_global** = Tüm pozisyonlarda hidden state ortalaması (genel arka plan)
+- **σ_global** = Tüm pozisyonlarda hidden state standart sapması (boyut başı)
+
+`(μ_v - μ_global) / σ_global` bize **"v token'ı genel ortalamadan hangi yönde sapıyor?"**ü veriyor — z-score gibi.
+
+## Recency-weighted detay
+
+Hidden state'leri toplarken son pozisyonu kullanmak yerine, **EMA (exponential moving average)** uyguluyoruz:
+
+```
+h_eff(t) = α · h_eff(t-1) + (1-α) · h(t)    α=0.85
+```
+
+Sebep: bir token'ın "mood"u birden fazla pozisyonun karışımıdır, sadece anlık değil. Bu small detail formülü daha sağlam yapıyor.
+
+## Embedding tarafı
+
+Aynı formül `tok_emb[v]` (giriş embedding) için de kullanılıyor:
+
+```
+tok_emb[v] = μ_v   (z-score normalize değil, ham mean)
+```
+
+Yani v token'ı görüldüğünde, modele "bu hidden state-ish bir şey gör" diyen embedding olarak μ_v'yi atıyoruz.
+
+## Kullanım — 3 senaryo
+
+### Senaryo 1: Yeni token eklemek (vocab+1)
 "Modelimde 'kuantum' kelimesi yoktu, şimdi eklemek istiyorum"
+1. 'kuantum' kelimesini vocab'a ekle (id=16000)
+2. Bu kelimenin geçtiği bir corpus topla (10 cümle yeter)
+3. O cümleleri modelden hidden state çıkar, μ_kuantum hesapla
+4. W_lm[16000] = (μ_kuantum - μ_global) / σ_global
+5. tok_emb[16000] = μ_kuantum
+6. **Eğitim YOK.** Model artık 'kuantum'u tanıyor.
 
-'kuantum' kelimesini vocab'a ekle (id=16000)
-Bu kelimenin geçtiği bir corpus topla (10 cümle yeter)
-O cümleleri modelden hidden state çıkar, μ_kuantum hesapla
-W_lm[16000] = (μ_kuantum - μ_global) / σ_global
-tok_emb[16000] = μ_kuantum
-Eğitim YOK. Model artık 'kuantum'u tanıyor.
-Senaryo 2: Mevcut token'ı yenilemek
+### Senaryo 2: Mevcut token'ı yenilemek
 Model 'Ankara'yı kötü öğrenmiş (acc 0.000). Düzeltmek için:
+1. Train corpus'tan 'Ankara'nın geçtiği pozisyonları topla
+2. μ_Ankara hesapla
+3. W_lm[ankara_id] satırını formülle güncelle
+4. **Saniyeler içinde** 'Ankara' acc 0.000 → 0.875
 
-Train corpus'tan 'Ankara'nın geçtiği pozisyonları topla
-μ_Ankara hesapla
-W_lm[ankara_id] satırını formülle güncelle
-Saniyeler içinde 'Ankara' acc 0.000 → 0.875
-Senaryo 3: 1 dakika fine-tune ile mükemmel
-Senaryo 2 sonrası, sadece o token satırını freeze fine-tune ile cilala:
+### Senaryo 3: 1 dakika fine-tune ile mükemmel
+Senaryo 2 sonrası, sadece o token satırını **freeze fine-tune** ile cilala:
+1. lm_head + tok_emb hariç tüm parametreleri freeze
+2. Sadece o token'ın satırlarına gradient ulaşmasına izin ver (mask)
+3. 600 step train (1 dakika)
+4. Acc 0.875 → **1.000**
 
-lm_head + tok_emb hariç tüm parametreleri freeze
-Sadece o token'ın satırlarına gradient ulaşmasına izin ver (mask)
-600 step train (1 dakika)
-Acc 0.875 → 1.000
-Bizim deneyde nadir token id=18 ('millî') tam böyle: form_noft 0.968 → form_ft 1.000.Neden çalışıyor?Eğitim, gradient descent ile her satırı yavaş yavaş "iyi yöne" iter. Çok sample gören token'larda iyi sonuç verir, az sample gören token'larda zayıf kalır. Formül o yönü tek-shot hesaplar — corpus'taki istatistiği direkt kullanır. Bu yüzden nadir token'larda eğitilmiş modelden ÇOK daha iyi çalışıyor.Cosine(W_form, W_lm_eğitilmiş) = 0.147 düşük çünkü ikisi farklı yönler. Ama acc her ikisi de yüksek çünkü hidden state geometrisinde birden fazla doğru yön var (overdetermined system).
+Bizim deneyde nadir token id=18 ('millî') tam böyle: form_noft 0.968 → form_ft **1.000**.
+
+## Neden çalışıyor?
+
+Eğitim, gradient descent ile her satırı yavaş yavaş "iyi yöne" iter. Çok sample gören token'larda iyi sonuç verir, az sample gören token'larda zayıf kalır. **Formül o yönü tek-shot hesaplar** — corpus'taki istatistiği direkt kullanır. Bu yüzden nadir token'larda eğitilmiş modelden ÇOK daha iyi çalışıyor.
+
+Cosine(W_form, W_lm_eğitilmiş) = 0.147 düşük çünkü ikisi farklı yönler. Ama acc her ikisi de yüksek çünkü hidden state geometrisinde **birden fazla doğru yön** var (overdetermined system).
+
 
 
 -------------------------------
