@@ -1,6 +1,3 @@
-Önce sana formülü açıklıyorum, sonra subagent'larla planı kuracağım.
-
----
 
 # FORMÜL — Türkçe Açıklama
 
