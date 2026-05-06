@@ -1,5 +1,5 @@
 
-# FORMÜL — Türkçe Açıklama
+# BACKLOSS FORMÜL — Türkçe Açıklama
 
 ## Temel mantık
 
